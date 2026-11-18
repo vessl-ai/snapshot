@@ -41,6 +41,7 @@
 
 #include "broker.hpp"
 #include "file_descriptor.hpp"
+#include "startup_trace.hpp"
 #include "utils/config.hpp"
 
 namespace fs = std::filesystem;
@@ -743,6 +744,8 @@ ParseDaemonOptions(std::span<const std::string_view> arguments)
       options.gpu.chunk_bytes = ParseSize(option, input, false);
     } else if (option == "--custom-storage-max-pinned-bytes") {
       options.gpu.max_pinned_bytes = ParseSize(option, input, true);
+    } else if (option == "--custom-storage-setup-threads") {
+      options.gpu.setup_threads = ParseSize(option, input, true);
     } else if (option == kStorageConfigOption) {
       options.storage_config = input;
     } else if (option == kModelStreamerConfigOption) {
@@ -757,6 +760,7 @@ ParseDaemonOptions(std::span<const std::string_view> arguments)
 ExitCode
 RunDaemon(const DaemonOptions& options)
 {
+  snapshot::pagebroker::StartupTrace("daemon start");
   shutting_down.store(false, std::memory_order_relaxed);
   snapshot::pagebroker::FatalCleanupShutdown cleanup_shutdown(shutting_down);
   // Resolve the entire configuration before exposing a socket or creating
@@ -798,7 +802,9 @@ RunDaemon(const DaemonOptions& options)
   snapshot::pagebroker::gpu::GpuEnginePtr gpu_engine;
   try {
     if (options.enable_gpu) {
+      StartupTrace("GPU engine start");
       gpu_engine = std::make_shared<snapshot::pagebroker::gpu::GpuEngine>(options.gpu);
+      StartupTrace("GPU engine %s", gpu_engine->Available() ? "available" : "unavailable");
     }
   } catch (const std::exception& error) {
     std::cerr << "initialize GPU engine: " << error.what() << '\n';
@@ -811,9 +817,11 @@ RunDaemon(const DaemonOptions& options)
   if (chmod(options.socket_path.c_str(), S_IRUSR | S_IWUSR)) {
     return Fail("protect control socket", {errno, std::generic_category()});
   }
+  StartupTrace("socket listening");
   try {
     Broker broker(options.staging_directory, options.storage_root, std::move(gpu_engine), std::move(config),
         kDefaultTransactionLifetime, std::move(model_streamer));
+    StartupTrace("serving");
     Serve(listener, broker, options.max_concurrent_requests);
   } catch (const std::exception& failure) {
     std::cerr << "PageBroker: " << failure.what() << '\n';

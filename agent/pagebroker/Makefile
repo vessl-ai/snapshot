@@ -62,9 +62,10 @@ daemon: generate
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DAEMON_SOURCES) v1/pagebroker.pb.cc \
 		-Wl,-Bstatic -lprotobuf -Wl,-Bdynamic $(NIXL_FLAGS) $(TRANSFER_FLAGS) -ldl -o pagebroker
 
-test: s3-restore-inventory-test rclone-process-test generate build/cancellation-test build/gpu-cuda-driver.o build/gpu-engine-test    | build
+test: s3-restore-inventory-test rclone-process-test generate build/cancellation-test build/gpu-cuda-driver.o build/gpu-engine-test build/gpu-setup-tasks-test    | build
 	./build/cancellation-test
 	./build/gpu-engine-test
+	./build/gpu-setup-tasks-test
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(PAGEBROKER_SOURCES) daemon.cpp tests/daemon_test.cpp $(BROKER_TEST_SOURCES) tests/filesystem_storage_test.cpp tests/storage_contract_test.cpp $(TRANSFER_TEST_SOURCES) v1/pagebroker.pb.cc $(BROKER_TEST_WRAP_FLAGS) -lprotobuf $(GTEST_FLAGS) $(NIXL_FLAGS) $(TRANSFER_FLAGS) -ldl -o build/pagebroker-test
 	./build/pagebroker-test
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(MODEL_STREAMER_RECOVERY_TEST_SOURCES) v1/pagebroker.pb.cc -lprotobuf $(GTEST_FLAGS) -o build/model-streamer-recovery-test
@@ -81,11 +82,15 @@ test: s3-restore-inventory-test rclone-process-test generate build/cancellation-
 build/cancellation-test: tests/cancellation_test.cpp cancellation.hpp fatal_cleanup.hpp | build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(GTEST_FLAGS) -o $@
 
-build/gpu-cuda-driver.o: gpu/cuda_driver.cpp | build
+build/gpu-cuda-driver.o: gpu/cuda_driver.cpp startup_trace.hpp | build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
+# Concurrent GPU setup scheduling, without CUDA.
+build/gpu-setup-tasks-test: gpu/setup_tasks_test.cpp gpu/setup_tasks.hpp | build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(GTEST_FLAGS) -o $@
+
 # These tests use real files and validate the engine without initializing CUDA.
-build/gpu-engine-test: generate transfer/engine/transfer_engine.cpp gpu/engine_test.cpp gpu/engine.cpp gpu/engine.hpp gpu/checkpoint.cpp gpu/checkpoint.hpp gpu/transfer.cpp gpu/transfer.hpp gpu/storage_manifest.cpp gpu/storage_manifest.hpp gpu/cuda_driver.cpp gpu/errors.hpp $(COMMON_SOURCES) $(IO_SOURCES) io_engine.hpp file_descriptor.hpp cancellation.hpp | build
+build/gpu-engine-test: generate transfer/engine/transfer_engine.cpp gpu/engine_test.cpp gpu/engine.cpp gpu/engine.hpp gpu/setup_tasks.hpp startup_trace.hpp gpu/checkpoint.cpp gpu/checkpoint.hpp gpu/transfer.cpp gpu/transfer.hpp gpu/storage_manifest.cpp gpu/storage_manifest.hpp gpu/cuda_driver.cpp gpu/errors.hpp $(COMMON_SOURCES) $(IO_SOURCES) io_engine.hpp file_descriptor.hpp cancellation.hpp | build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) gpu/engine_test.cpp gpu/engine.cpp gpu/checkpoint.cpp \
 		gpu/transfer.cpp gpu/storage_manifest.cpp gpu/cuda_driver.cpp $(COMMON_SOURCES) $(IO_SOURCES) transfer/engine/transfer_engine.cpp v1/pagebroker.pb.cc \
 		$(GTEST_FLAGS) -lprotobuf $(NIXL_FLAGS) $(TRANSFER_FLAGS) -ldl -o $@

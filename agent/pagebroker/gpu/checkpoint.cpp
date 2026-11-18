@@ -3,6 +3,7 @@
 
 #include "checkpoint.hpp"
 #include "../errors.hpp"
+#include "../startup_trace.hpp"
 
 #include <poll.h>
 #include <signal.h>
@@ -55,12 +56,15 @@ ResolveCustomStorageCompletion()
 
 CheckpointAPI::CheckpointAPI()
 {
+  StartupTrace("cuInit start");
   const auto initialized = cuInit(0);
+  StartupTrace("cuInit end (CUresult %d)", static_cast<int>(initialized));
   if (initialized == CUDA_ERROR_NO_DEVICE) {
     return;
   }
   CheckCuda(initialized, "cuInit");
   complete_ = ResolveCustomStorageCompletion();
+  StartupTrace("CustomStorage %s", complete_ ? "supported" : "unsupported");
 }
 
 void

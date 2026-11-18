@@ -6,6 +6,7 @@
 #include "../errors.hpp"
 #include "../io_engine.hpp"
 #include "../fatal_cleanup.hpp"
+#include "../startup_trace.hpp"
 #include <cerrno>
 #include <stdexcept>
 #include <system_error>
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -269,6 +271,8 @@ void TransferBuffers::Initialize(CUcontext context)
   if (status != CUDA_SUCCESS) {
     throw std::runtime_error(gpu::CudaErrorMessage(status, "set transfer context"));
   }
+  CUdevice device = -1;
+  (void)cuCtxGetDevice(&device);
   std::vector<std::unique_ptr<TransferSlot>> slots;
   for (size_t i = 0; i < options.buffer_count; ++i) {
     auto slot = std::make_unique<TransferSlot>();
@@ -278,11 +282,22 @@ void TransferBuffers::Initialize(CUcontext context)
     }
     slots.push_back(std::move(slot));
   }
+  StartupTrace("device %d ring: %zu x %zu bytes pinned", static_cast<int>(device), options.buffer_count,
+               options.chunk_bytes);
   std::vector<void*> addresses;
   for (const auto& slot : slots) {
     addresses.push_back(slot->data());
   }
-  auto storage = std::make_unique<NixlTransferEngine>(addresses, options.chunk_bytes);
+  std::unique_ptr<NixlTransferEngine> storage;
+  {
+    // The engine may pin several rings at once (EngineOptions::setup_threads).
+    // Creating the NIXL agents one at a time keeps that independent of NIXL's
+    // own locking; it is short next to pinning the ring.
+    static std::mutex agent_creation;
+    std::lock_guard lock(agent_creation);
+    storage = std::make_unique<NixlTransferEngine>(addresses, options.chunk_bytes);
+  }
+  StartupTrace("device %d ring: NIXL buffers registered", static_cast<int>(device));
   impl_->storage = std::move(storage);
   impl_->slots = std::move(slots);
   impl_->context = context;

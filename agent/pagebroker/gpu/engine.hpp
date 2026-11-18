@@ -44,6 +44,9 @@ struct EngineOptions {
   size_t buffer_count = 32;
   size_t chunk_bytes = 128ULL * 1024 * 1024;
   size_t max_pinned_bytes = 0;
+  // GPUs whose context and pinned ring are set up at the same time at startup.
+  // 0 sets up every GPU on its own thread; 1 sets them up one after another.
+  size_t setup_threads = 0;
 };
 struct ParticipantResult {
   uint32_t captured_pid = 0;

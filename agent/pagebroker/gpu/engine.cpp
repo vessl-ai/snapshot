@@ -24,10 +24,13 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "checkpoint.hpp"
 #include "../errors.hpp"
+#include "../startup_trace.hpp"
 #include "file_descriptor.hpp"
+#include "setup_tasks.hpp"
 #include "storage_manifest.hpp"
 #include "transfer.hpp"
 
@@ -350,16 +353,32 @@ struct GpuEngine::GpuEngineState {
     }
     const transfer::TransferOptions settings{options.buffer_count, options.chunk_bytes, true};
     transfer::TransferMemoryBytes(settings, count, options.max_pinned_bytes);
-    std::map<CUdevice, std::string> labels;
-    for (int index = 0; index < count; ++index) {
-      CUdevice id;
-      CheckCuda(cuDeviceGet(&id, index), "get GPU device");
-      labels[id] = DeviceLabel(index, id);
-      SetUpOrSkip(labels[id], [&] {
-        auto device = std::make_unique<Device>(id, settings);
+    const auto gpus = static_cast<size_t>(count);
+    std::vector<CUdevice> ids(gpus);
+    std::vector<std::string> labels(gpus);
+    for (size_t index = 0; index < gpus; ++index) {
+      CheckCuda(cuDeviceGet(&ids[index], static_cast<int>(index)), "get GPU device");
+      labels[index] = DeviceLabel(static_cast<int>(index), ids[index]);
+    }
+    StartupTrace("%zu GPUs, setup threads %zu (0: one per GPU)", gpus, options.setup_threads);
+    // A GPU's setup touches only its own context, Device and ring, and CUDA
+    // keeps the current context per thread, so GPUs can be set up concurrently.
+    // Skipping a failed GPU (SetUpOrSkip) works the same on any thread.
+    std::vector<std::unique_ptr<Device>> prepared(gpus);
+    RunSetupTasks(gpus, options.setup_threads, [&](size_t index) {
+      StartupTrace("%s context start", labels[index].c_str());
+      SetUpOrSkip(labels[index], [&] {
+        auto device = std::make_unique<Device>(ids[index], settings);
         device->ring_bytes = transfer::TransferBuffers::AllocationBytes(device->context.handle, settings);
-        devices.emplace(id, std::move(device));
+        prepared[index] = std::move(device);
       });
+      StartupTrace("%s context %s", labels[index].c_str(), prepared[index] ? "ready" : "skipped");
+    });
+    std::map<CUdevice, const std::string*> names;
+    for (size_t index = 0; index < gpus; ++index) {
+      if (prepared[index] && devices.emplace(ids[index], std::move(prepared[index])).second) {
+        names.emplace(ids[index], &labels[index]);
+      }
     }
     // The pinned-memory limit is configuration, not a GPU fault, so it still
     // stops PageBroker. The check above counts every GPU; this one adds CUDA's
@@ -373,10 +392,23 @@ struct GpuEngine::GpuEngineState {
       Require(!options.max_pinned_bytes || total_bytes <= options.max_pinned_bytes,
               "total pinned allocation exceeds max-pinned-bytes");
     }
-    for (auto it = devices.begin(); it != devices.end();) {
-      auto& device = *it->second;
-      const bool ready = SetUpOrSkip(labels[it->first], [&] { device.buffers.Initialize(device.context.handle); });
-      it = ready ? std::next(it) : devices.erase(it);
+    std::vector<std::pair<CUdevice, Device*>> rings;
+    for (const auto& [id, device] : devices) {
+      rings.emplace_back(id, device.get());
+    }
+    // Not std::vector<bool>: threads write neighbouring entries.
+    std::vector<char> ready(rings.size(), 0);
+    RunSetupTasks(rings.size(), options.setup_threads, [&](size_t index) {
+      Device* device = rings[index].second;
+      const auto& label = *names.at(rings[index].first);
+      StartupTrace("%s ring start", label.c_str());
+      ready[index] = SetUpOrSkip(label, [&] { device->buffers.Initialize(device->context.handle); });
+      StartupTrace("%s ring %s", label.c_str(), ready[index] ? "ready" : "skipped");
+    });
+    for (size_t index = 0; index < rings.size(); ++index) {
+      if (!ready[index]) {
+        devices.erase(rings[index].first);
+      }
     }
     available = !devices.empty();
   }

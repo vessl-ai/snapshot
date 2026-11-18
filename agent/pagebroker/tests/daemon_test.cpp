@@ -993,7 +993,13 @@ TEST(DaemonOptionsTest, ParsesCustomStorageOptions)
   EXPECT_EQ(options.gpu.buffer_count, 2);
   EXPECT_EQ(options.gpu.chunk_bytes, 1048576);
   EXPECT_EQ(options.gpu.max_pinned_bytes, 0);
+  EXPECT_EQ(options.gpu.setup_threads, 0);
   EXPECT_FALSE(options.enable_gpu);
+  for (const auto* threads : {"0", "1", "8"}) {
+    std::vector<std::string_view> with_threads = arguments;
+    with_threads.insert(with_threads.end(), {"--custom-storage-setup-threads", threads});
+    EXPECT_EQ(ParseDaemonOptions(with_threads).gpu.setup_threads, std::stoul(threads));
+  }
 }
 
 TEST(DaemonOptionsTest, RejectsInvalidOptions)
@@ -1003,7 +1009,8 @@ TEST(DaemonOptionsTest, RejectsInvalidOptions)
       {"--custom-storage-buffer-count", "0"}, {"--custom-storage-chunk-bytes", "0"},
       {"--max-concurrent-requests", "0"}, {"--custom-storage-max-pinned-bytes", "-1"},
       {"--custom-storage-buffer-count", "184467440737095516160"},
-      {"--custom-storage-chunk-bytes", "12bytes"}, {"--unknown", "1"}};
+      {"--custom-storage-chunk-bytes", "12bytes"}, {"--custom-storage-setup-threads", "-1"},
+      {"--custom-storage-setup-threads", "two"}, {"--unknown", "1"}};
   for (const auto& suffix : invalid) {
     std::vector<std::string_view> arguments{"socket", "staging", "storage"};
     arguments.insert(arguments.end(), suffix.begin(), suffix.end());

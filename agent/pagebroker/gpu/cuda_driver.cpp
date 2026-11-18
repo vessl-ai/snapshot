@@ -7,10 +7,13 @@
 #include <cstdio>
 #include <string>
 
+#include "../startup_trace.hpp"
+
 namespace {
 void* Driver() {
   static void* library = [] {
     void* result = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    snapshot::pagebroker::StartupTrace("libcuda.so.1 %s", result ? "loaded" : "not loaded");
     if (!result) {
       const char* error = dlerror();
       // CUDA is optional on CPU nodes. Keep the loader diagnostic for operators.
